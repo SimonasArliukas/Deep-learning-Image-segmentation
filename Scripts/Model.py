@@ -3,32 +3,33 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import os
+from Feature_engineering import test_loader
 
 
-
-#Calculating class distribution for imbalanced data
-def get_class_distribution(dataloader, num_classes):
-    print("Calculating class distribution...")
-    class_counts = torch.zeros(num_classes)
-    total_pixels = 0
-
-    for _, masks in dataloader:
-        # Flatten masks to 1D to count occurrences
-        flat_masks = masks.view(-1)
-        # bincount calculates frequency of each integer
-        counts = torch.bincount(flat_masks, minlength=num_classes)
-        class_counts += counts
-        total_pixels += flat_masks.numel()
-
-    # Convert to percentages
-    percentages = (class_counts / total_pixels) * 100
-
-    for i in range(num_classes):
-        print(f"Class {i}: {class_counts[i].item():.0f} pixels ({percentages[i].item():.2f}%)")
-
-    return class_counts, percentages
-
-get_class_distribution(train_loader, 4)
+    #
+    # #Calculating class distribution for imbalanced data
+    # def get_class_distribution(dataloader, num_classes):
+    #     print("Calculating class distribution...")
+    #     class_counts = torch.zeros(num_classes)
+    #     total_pixels = 0
+    #
+    #     for _, masks in dataloader:
+    #         # Flatten masks to 1D to count occurrences
+    #         flat_masks = masks.view(-1)
+    #         # bincount calculates frequency of each integer
+    #         counts = torch.bincount(flat_masks, minlength=num_classes)
+    #         class_counts += counts
+    #         total_pixels += flat_masks.numel()
+    #
+    #     # Convert to percentages
+    #     percentages = (class_counts / total_pixels) * 100
+    #
+    #     for i in range(num_classes):
+    #         print(f"Class {i}: {class_counts[i].item():.0f} pixels ({percentages[i].item():.2f}%)")
+    #
+    #     return class_counts, percentages
+    #
+    # get_class_distribution(train_loader, 4)
 
 ##Attention gate for skip connections
 class AttentionGate(nn.Module):
@@ -59,7 +60,7 @@ class AttentionGate(nn.Module):
         if g1.shape[2:] != x1.shape[2:]:
             g1 = F.interpolate(g1, size=x1.shape[2:], mode='bilinear', align_corners=True) #Align the width and height.
 
-        psi = self.relu(g1 + x1) #Combine lower and current encoder layers (current layer has higher resolution and lower layer has higher intelligence_
+        psi = self.relu(g1 + x1) #Combine lower decoder and current encoder layers (current layer has higher resolution and lower layer has higher intelligence_
         psi = self.psi(psi) #Run the convution through the sigmoid
 
         self.mean_psi = psi.mean().item()
@@ -265,7 +266,7 @@ if __name__ == '__main__':
     )
 
     #To start training again if needed.
-    checkpoint_path = "attention_res_network_turbo.pth"
+    checkpoint_path = "attention_res_network.pth"
 
     if os.path.exists(checkpoint_path):
         print(f"--- Loading Checkpoint: {checkpoint_path} ---")
@@ -283,86 +284,115 @@ if __name__ == '__main__':
         start_epoch = 0
 
     num_epochs = 50
+    # --- Early Stopping & Best Model Configuration ---
+    best_val_loss = float('inf')
+    patience = 5  # Stop if no improvement after 5 epochs
+    epochs_no_improve = 0  # Counter for patience
+    early_stop = False
+    best_model_path = "best_attention_res_model.pth"
 
     for epoch in range(start_epoch, num_epochs):
-        model.train()  # Start training the model
-
+        # --- TRAINING PHASE ---
+        model.train()
         running_loss = 0.0
-        running_ce = 0.0
-        running_dice = 0.0
 
         for i, (images, masks) in enumerate(train_loader):
-            # Move data to GPU
-            images = images.to(device)
-            masks = masks.to(device)
+            images, masks = images.to(device), masks.to(device)
 
-            # Calculate the model outputs
+            optimizer.zero_grad()
             outputs = model(images)
-
-            #Calculate loss
             loss = criterion(outputs, masks)
+            loss.backward()
+            optimizer.step()
 
-            current_ce = criterion.last_focal
-            current_dice = criterion.last_dice
-
-            # --- Backward Pass (Optimization) ---
-            optimizer.zero_grad()  # Clear previous gradients
-            loss.backward()  # Calculate new gradients
-            optimizer.step()  # Update weights
-
-            #Track loss function
             running_loss += loss.item()
-            running_ce += current_ce
-            running_dice += current_dice
 
             if (i + 1) % 10 == 0:
-                print(f"Epoch [{epoch + 1}/{num_epochs}], Batch [{i + 1}/{len(train_loader)}]")
-                print(f"  > Total Loss:  {loss.item():.4f}")
-                print(f"  > Focal Loss:  {criterion.last_focal:.4f}")
-                print(f"  > Dice Loss:   {criterion.last_dice:.4f}")
-                print("-" * 30)
+                print(
+                    f"Epoch [{epoch + 1}/{num_epochs}], Batch [{i + 1}/{len(train_loader)}] | Loss: {loss.item():.4f}")
 
+        avg_train_loss = running_loss / len(train_loader)
 
+        # --- VALIDATION PHASE (Test Set Statistics) ---
+        model.eval()
+        val_loss = 0.0
+        tp = torch.zeros(4).to(device)
+        fp = torch.zeros(4).to(device)
+        fn = torch.zeros(4).to(device)
+        eps = 1e-7
 
-        epoch_loss = running_loss / len(train_loader)
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.4f}")
-        scheduler.step(epoch_loss)
+        print(f"\n--- Running Validation: Epoch {epoch + 1} ---")
 
+        with torch.no_grad():
+            for v_images, v_masks in test_loader:
+                v_images, v_masks = v_images.to(device), v_masks.to(device)
+
+                v_outputs = model(v_images)
+                val_loss += criterion(v_outputs, v_masks).item()
+
+                preds = v_outputs.argmax(dim=1)
+
+                for c in range(4):
+                    tp[c] += ((preds == c) & (v_masks == c)).sum().item()
+                    fp[c] += ((preds == c) & (v_masks != c)).sum().item()
+                    fn[c] += ((preds != c) & (v_masks == c)).sum().item()
+
+        avg_val_loss = val_loss / len(test_loader)
+
+        # Calculate final metrics
+        precision = tp / (tp + fp + eps)
+        recall = tp / (tp + fn + eps)
+        f1 = 2 * (precision * recall) / (precision + recall + eps)
+        macro_f1 = f1.mean().item()
+
+        # Display results
+        print(f"Validation Loss: {avg_val_loss:.4f}")
+        print(f"{'Class':<10} | {'Precision':<10} | {'Recall':<10} | {'F1-Score':<10}")
+        print("-" * 55)
+        for c in range(4):
+            print(f"Class {c:<4} | {precision[c]:<10.4f} | {recall[c]:<10.4f} | {f1[c]:<10.4f}")
+        print("-" * 55)
+        print(f"Macro F1 Score: {macro_f1:.4f}\n")
+
+        # --- SCHEDULER ---
+        # Adjust LR based on validation performance
+        scheduler.step(avg_val_loss)
+
+        # --- ATTENTION MONITORING ---
         if (epoch + 1) % 5 == 0:
-            print(f"\n{'=' * 20} ATTENTION MONITOR {'=' * 20}")
+            print(f"{'=' * 20} ATTENTION MONITOR {'=' * 20}")
             attn_stats = model.get_attention_stats()
             for gate, val in attn_stats.items():
                 status = "Focusing" if val < 0.5 else "Idle/Open"
                 print(f"  {gate}: {val:.4f} -> [{status}]")
             print('=' * 55 + '\n')
-        #Take 1 batch and calculate the statistics to see if I am not just predicting the background
-        if epoch >= 0:
-            model.eval()
-            with torch.no_grad():
-                images, masks = next(iter(train_loader))
-                images = images.to(device)
 
-                # Predict on the WHOLE batch
-                pred = model(images)
-                pred_mask = pred.argmax(dim=1)
-
-                print(f"--- Batch Statistics (Size: {images.size(0)}) ---")
-                print("Predicted classes in batch:", pred_mask.unique().tolist())
-                print("GT classes in batch:       ", masks.unique().tolist())
-
-                for c in range(4):
-                    # Calculate % across the whole batch
-                    pct = (pred_mask == c).float().mean().item() * 100
-                    print(f"  Class {c}: {pct:.1f}% of total pixels in batch")
-            model.train()
-
-        #Checkpoint so that I don't lose the model
+        # --- CHECKPOINTING & EARLY STOPPING ---
         checkpoint_data = {
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'loss': epoch_loss,
+            'val_loss': avg_val_loss,
+            'macro_f1': macro_f1
         }
-        torch.save(checkpoint_data, "attention_res_network_turbo.pth")
-        print(f"Saved latest checkpoint to latest_checkpoint.pth")
 
+        # Check for improvement in Validation Loss
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0  # Reset counter
+            torch.save(checkpoint_data, best_model_path)
+            print(f"NEW BEST MODEL: {avg_val_loss:.4f} (Saved to {best_model_path})")
+        else:
+            epochs_no_improve += 1
+            print(f" No improvement for {epochs_no_improve}/{patience} epochs.")
+
+        # Always save the latest version to resume training
+        torch.save(checkpoint_data, checkpoint_path)
+        print(f"Saved latest checkpoint to {checkpoint_path}")
+
+        # Trigger Early Stopping
+        if epochs_no_improve >= patience:
+            print(f"\n EARLY STOPPING: Validation loss hasn't improved for {patience} epochs. Stopping training.")
+            break
+
+        model.train()  # Return to training mode for next epoch

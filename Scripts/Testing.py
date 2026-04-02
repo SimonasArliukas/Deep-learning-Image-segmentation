@@ -13,7 +13,7 @@ device = torch.device("mps")
 model = BetterUNet(num_classes=4).to(device)
 
 # Load the model
-checkpoint = torch.load('attention_res_network_turbo.pth', map_location=device)
+checkpoint = torch.load('best_attention_res_model.pth', map_location=device)
 model.load_state_dict(checkpoint['model_state_dict'])
 
 
@@ -22,7 +22,7 @@ def evaluate_segmentation(model, test_loader, device):
     model.eval()
     all_preds = []
     all_masks = []
-    class_names = ['Background', 'Elephant', 'Leopard', 'Giraffe']
+    class_names = ['Background', 'Elephant', 'Giraffe', 'Leopard']
 
     with torch.no_grad():
         for images, masks in test_loader:
@@ -127,4 +127,4 @@ def save_batch_predictions(model, device, epoch, batch_index=0):
 
 
 # Example: Plot the 3rd batch (index 2)
-save_batch_predictions(model, device, 14, batch_index=4)
+save_batch_predictions(model, device, 25, batch_index=3)

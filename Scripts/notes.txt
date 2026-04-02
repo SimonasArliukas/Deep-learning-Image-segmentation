@@ -1,0 +1,4 @@
+1) Pasidalyti funkcionalumą matuoti nematytus vaizdus. (SOLVED)
+2) Po kiekvienos epochos išsisaugoti statistikas kurias skaičiuojam po ir nuostolių funkcijas (SOLVED)
+3) Early stop strategija. (SOLVED)
+4) Pasidaryti sunkiausių atveju skaičiavimą. (pažiūrėti paklaidų analizę). Biggest loss.
